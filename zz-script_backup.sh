@@ -1,20 +1,25 @@
 #!/bin/bash
 #
-# Cold backup of every compose stack under $ROOT_DIR.
+# Cold backup of every compose stack under $ROOT_DIR, as one compressed file.
 #
 #   1. Stop everything that is running, so databases are flushed and the
 #      copy is consistent.
-#   2. rsync the whole tree into a dated snapshot (hardlinked against the
-#      previous snapshot, so unchanged files cost no extra space).
+#   2. Pack the whole containers folder into backup/containers/<date>.tar.zst.
+#      Linux owners and permissions are kept inside it, so restoring it on
+#      any machine (or after a trip through Windows) is exact.
 #   3. Bring up the ON list from homelab-stacks.conf with 'compose up -d'.
 #      No updates: only images that are missing get downloaded. OFF stacks
 #      stay off, stacks in neither list go back to how they were.
+#      --keep-down skips this (aa-all_in_one.sh starts them itself, after
+#      the updates, so every container starts once).
 #
-# Step 3 is guaranteed by a trap: errors, Ctrl+C or SIGTERM at any point
-# still bring the stacks back, and Ctrl+C is ignored while doing so.
+# Errors, Ctrl+C or SIGTERM at any point still bring the stacks back (with
+# --keep-down too), and Ctrl+C is ignored while doing so.
 #
-# Usage: sudo ./zz-script_backup.sh
-# Exit codes: 0 ok, 1 fatal (no snapshot), 2 snapshot made with warnings.
+# Restore: see the comment at the end of this file.
+#
+# Usage: sudo ./zz-script_backup.sh [--keep-down]
+# Exit codes: 0 ok, 1 fatal (no backup), 2 backup made with warnings.
 
 set -Eeuo pipefail
 shopt -s nullglob
@@ -29,16 +34,19 @@ LOCK_FILE="/run/lock/homelab-backup.lock"
 STACKS_FILE="$(dirname "$(readlink -f "$0")")/homelab-stacks.conf"
 LOG_KEEP_DAYS=90          # delete logs older than this
 
-KEEP_SNAPSHOTS=7          # completed snapshots to keep, 0 = never prune
+KEEP_BACKUPS=7            # newest archives to keep, 0 = keep all
+ZSTD_LEVEL=3              # 1 fastest .. 19 smallest; 3 is a good balance on a Pi
 STOP_TIMEOUT=120          # seconds per stack for a graceful stop
 START_TIMEOUT=600         # seconds per stack to start
 SETTLE_SECONDS=20         # wait before checking containers came back up
-
-# Windows target (unused for now)
-# WINDOWS_HOST="100.101.64.105"
-# WINDOWS_USER="crackano"
-# WINDOWS_PATH="D:/homelab/backup"
 # --------------
+
+KEEP_DOWN=0
+case "${1:-}" in
+	"") ;;
+	--keep-down) KEEP_DOWN=1 ;;
+	*) echo "Usage: $0 [--keep-down]" >&2; exit 1 ;;
+esac
 
 WARNINGS=()
 STACKS=()                  # every stack folder, relative to $ROOT_DIR
@@ -46,8 +54,8 @@ UNLISTED=()                # stacks in neither list
 declare -A STACK_IDS=()    # stack -> container IDs that were running before
 STOP_BEGAN=0
 RESTORE_DONE=0
-SNAPSHOT_DIR=""
-PARTIAL_DIR=""
+ARCHIVE=""
+PARTIAL=""
 
 ts()   { date '+%F %T'; }
 log()  { echo "$(ts) [INFO]  $*"; }
@@ -170,10 +178,9 @@ restore_stacks() {
 on_exit() {
 	local rc=$?
 	chown -h "$USER_NAME:" "$LOG_DIR" "$LOG_DIR"/*.log 2>/dev/null || true
-	restore_stacks
-	if [ -n "$PARTIAL_DIR" ] && [ -d "$PARTIAL_DIR" ]; then
-		warn "incomplete snapshot left at $PARTIAL_DIR (will be reused next run)"
-	fi
+	if [ -n "$PARTIAL" ]; then rm -f "$PARTIAL"; fi
+	# --keep-down only holds on success: on a failure nobody else will start them
+	if [ "$KEEP_DOWN" -eq 0 ] || [ "$rc" -ne 0 ]; then restore_stacks; fi
 	if [ ${#WARNINGS[@]} -gt 0 ]; then
 		echo "$(ts) [INFO]  ${#WARNINGS[@]} warning(s):"
 		printf '    - %s\n' "${WARNINGS[@]}"
@@ -183,10 +190,10 @@ on_exit() {
 		exit "$rc"
 	fi
 	if [ ${#WARNINGS[@]} -gt 0 ]; then
-		log "Backup finished WITH WARNINGS: $SNAPSHOT_DIR"
+		log "Backup finished WITH WARNINGS: $ARCHIVE"
 		exit 2
 	fi
-	log "Backup OK: $SNAPSHOT_DIR"
+	log "Backup OK: $ARCHIVE"
 }
 
 # --- preflight ---
@@ -210,7 +217,7 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-for cmd in docker rsync timeout flock; do
+for cmd in docker tar zstd timeout flock; do
 	command -v "$cmd" >/dev/null || die "missing required command: $cmd"
 done
 docker info >/dev/null 2>&1 || die "docker daemon is not reachable"
@@ -257,22 +264,14 @@ for d in "$ROOT_DIR"/*/; do
 	done
 done
 
-# --- snapshot target ---
-SNAPSHOT_DIR="$BACKUP_BASE/$(date +%F)"
-if [ -e "$SNAPSHOT_DIR" ]; then SNAPSHOT_DIR="$BACKUP_BASE/$(date +%F_%H%M%S)"; fi
-PARTIAL_DIR="$BACKUP_BASE/.partial"
-
-# Newest completed snapshot, used as the hardlink base
-LINK_DEST=""
-mapfile -t EXISTING < <(find "$BACKUP_BASE" -mindepth 1 -maxdepth 1 -type d -name '20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' -printf '%f\n' | sort)
-if [ ${#EXISTING[@]} -gt 0 ]; then LINK_DEST="$BACKUP_BASE/${EXISTING[-1]}"; fi
-
-if [ -z "$LINK_DEST" ]; then
-	need_kb="$(du -sk "$ROOT_DIR" | cut -f1)"
-	avail_kb="$(df -Pk "$BACKUP_BASE" | awk 'NR==2 {print $4}')"
-	[ "$avail_kb" -gt $((need_kb + need_kb / 10)) ] \
-		|| die "not enough space: need ~$((need_kb / 1024))M, have $((avail_kb / 1024))M"
-fi
+# --- target ---
+ARCHIVE="$BACKUP_BASE/$(date +%F).tar.zst"
+if [ -e "$ARCHIVE" ]; then ARCHIVE="$BACKUP_BASE/$(date +%F_%H%M%S).tar.zst"; fi
+# The uncompressed size is an upper bound for the archive
+need_kb="$(du -sk "$ROOT_DIR" | cut -f1)"
+avail_kb="$(df -Pk "$BACKUP_BASE" | awk 'NR==2 {print $4}')"
+[ "$avail_kb" -gt "$need_kb" ] \
+	|| die "not enough space: need up to $((need_kb / 1024))M, have $((avail_kb / 1024))M"
 
 # --- stop everything ---
 # Record first, so a failure mid-stop still knows what to bring back
@@ -311,40 +310,48 @@ while read -r name wdir; do
 	fi
 done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.project.working_dir"}}')
 
-# --- copy ---
-log "Copying $ROOT_DIR -> $SNAPSHOT_DIR"
-mkdir -p "$PARTIAL_DIR"
-rsync_args=(-aHAX --numeric-ids --delete --info=stats1)
-if [ -n "$LINK_DEST" ]; then
-	rsync_args+=(--link-dest="$LINK_DEST")
-	log "Hardlinking unchanged files against ${LINK_DEST##*/}"
+# --- compress ---
+# Written under a hidden name, then renamed in one step, so Syncthing never
+# carries a half-written archive to other machines
+PARTIAL="$BACKUP_BASE/.${ARCHIVE##*/}.partial"
+log "Compressing $ROOT_DIR -> $ARCHIVE"
+# All cores: the apps are stopped anyway
+if ! live archive "${ARCHIVE##*/}" \
+	tar --create --file="$PARTIAL" --use-compress-program="zstd -$ZSTD_LEVEL -T0" \
+		--numeric-owner --acls --xattrs --checkpoint=5000 --checkpoint-action='echo=%{w}T' \
+		-C "${ROOT_DIR%/*}" "${ROOT_DIR##*/}"; then
+	die "compressing failed: $LAST_LINE"
 fi
+live verify "${ARCHIVE##*/}" zstd -tq "$PARTIAL" || die "the archive is corrupt: $LAST_LINE"
 
-set +e
-rsync "${rsync_args[@]}" "$ROOT_DIR/" "$PARTIAL_DIR/"
-rsync_rc=$?
-set -e
-case "$rsync_rc" in
-	0) ;;
-	24) warn "some files vanished during the copy (rsync 24)" ;;
-	*) die "rsync failed with exit code $rsync_rc" ;;
-esac
-
-mv "$PARTIAL_DIR" "$SNAPSHOT_DIR"
-PARTIAL_DIR=""
-log "Snapshot complete"
+chown "$USER_NAME:" "$PARTIAL"
+chmod 600 "$PARTIAL"   # it holds every app's data and secrets
+mv -f "$PARTIAL" "$ARCHIVE"
+PARTIAL=""
+log "Backup written: $(du -h "$ARCHIVE" | cut -f1) for $((need_kb / 1024))M of containers"
 
 # --- bring the ON list back (also runs from the trap if anything failed) ---
-restore_stacks
+if [ "$KEEP_DOWN" -eq 0 ]; then
+	restore_stacks
+else
+	log "Leaving the stacks down (--keep-down)"
+fi
 
 # --- retention ---
-if [ "$KEEP_SNAPSHOTS" -gt 0 ]; then
-	mapfile -t EXISTING < <(find "$BACKUP_BASE" -mindepth 1 -maxdepth 1 -type d -name '20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' -printf '%f\n' | sort)
-	excess=$(( ${#EXISTING[@]} - KEEP_SNAPSHOTS ))
+if [ "$KEEP_BACKUPS" -gt 0 ]; then
+	mapfile -t EXISTING < <(find "$BACKUP_BASE" -mindepth 1 -maxdepth 1 -type f -name '20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]*.tar.zst' -printf '%f\n' | sort)
+	excess=$(( ${#EXISTING[@]} - KEEP_BACKUPS ))
 	for (( i = 0; i < excess; i++ )); do
-		log "Pruning old snapshot ${EXISTING[$i]}"
-		rm -rf --one-file-system -- "${BACKUP_BASE:?}/${EXISTING[$i]}"
+		log "Deleting old backup ${EXISTING[$i]}"
+		rm -f -- "${BACKUP_BASE:?}/${EXISTING[$i]}"
 	done
 fi
 
 log "Disk: $(df -h --output=used,avail,pcent "$BACKUP_BASE" | tail -1 | xargs)"
+
+# --- restore ---
+# As root, on this or any Linux machine with Docker:
+#   1. stop what's running (or start from an empty machine)
+#   2. tar --extract --zstd --numeric-owner --acls --xattrs -f <date>.tar.zst -C ~/homelab
+#      (it unpacks as ~/homelab/containers; move the old one aside first)
+#   3. xz-script_cleanup.sh to bring the ON list up

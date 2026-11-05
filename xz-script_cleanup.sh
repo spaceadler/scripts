@@ -8,13 +8,19 @@
 #      that are missing get downloaded. Stacks in neither list are left alone.
 #   3. Docker cleanup: every image no container uses (old versions, the
 #      :previous rollback images), unused networks, the build cache.
-#      Volumes are never touched: they can hold app data.
+#      Volumes are only touched with --volumes (below): they can hold app data.
 #
 # --restart stops the ON stacks first, so they come up fresh on whatever
 # images were just downloaded (used by aa-all_in_one.sh). If interrupted
 # after that, the ON list is still brought back up.
 #
-# Usage: sudo ./xz-script_cleanup.sh [--restart]
+# --volumes also deletes unused volumes that no compose file under
+# $ROOT_DIR declares any more: leftovers of old or deleted apps, and the
+# anonymous ones old containers left behind. A volume a compose file still
+# declares is kept even while its app is off (say an OFF app's database).
+# Volumes are not in the backups, so this cannot be undone.
+#
+# Usage: sudo ./xz-script_cleanup.sh [--restart] [--volumes]
 # Exit codes: 0 ok, 1 fatal, 2 finished with warnings.
 
 set -Eeuo pipefail
@@ -35,11 +41,14 @@ SETTLE_SECONDS=20         # wait before checking the ON stacks
 # --------------
 
 RESTART=0
-case "${1:-}" in
-	"") ;;
-	--restart) RESTART=1 ;;
-	*) echo "Usage: $0 [--restart]" >&2; exit 1 ;;
-esac
+PRUNE_VOLUMES=0
+for arg in "$@"; do
+	case "$arg" in
+		--restart) RESTART=1 ;;
+		--volumes) PRUNE_VOLUMES=1 ;;
+		*) echo "Usage: $0 [--restart] [--volumes]" >&2; exit 1 ;;
+	esac
+done
 
 WARNINGS=()
 STACKS=()
@@ -135,7 +144,10 @@ up_on_list() {
 	log "Turning on ${#ON_STACKS[@]} stack(s)"
 	for s in "${ON_STACKS[@]}"; do
 		[ -f "$ROOT_DIR/$s/docker-compose.yml" ] || continue
-		if live start "$s" compose "$s" "$UP_TIMEOUT" up -d; then
+		# "AlreadyExists" after a containerd upgrade: recreate (data is kept)
+		if live start "$s" compose "$s" "$UP_TIMEOUT" up -d \
+			|| { [[ $LAST_LINE == *AlreadyExists* ]] \
+				&& live recreate "$s" compose "$s" "$UP_TIMEOUT" up -d --force-recreate; }; then
 			log "  on      $s"
 			STARTED+=("$s")
 		else
@@ -271,10 +283,52 @@ log "Removing the build cache"
 live prune cache docker builder prune -af || warn "build cache prune failed: $LAST_LINE"
 log "  $LAST_LINE"
 
+# Volumes every stack declares, by their real Docker name (compose resolves
+# project prefixes, name: and external: for us). Fails if any stack's compose
+# file can't be read: its volumes would look undeclared and get deleted.
+declared_volumes() {
+	local s json
+	for s in "${STACKS[@]}"; do
+		if ! json="$(docker compose -f "$ROOT_DIR/$s/docker-compose.yml" config --format json 2>>"$LOG_FILE")"; then
+			echo "$s" >&2
+			return 1
+		fi
+		python3 -c 'import json, sys
+for v in (json.loads(sys.argv[1]).get("volumes") or {}).values():
+    if v and v.get("name"): print(v["name"])' "$json"
+	done | sort -u
+}
+
+if [ "$PRUNE_VOLUMES" -eq 1 ]; then
+	log "Removing unused volumes no compose file declares (--volumes)"
+fi
+if [ "$PRUNE_VOLUMES" -eq 1 ] && ! declared="$(declared_volumes 2>/tmp/xz-unreadable.$$)"; then
+	warn "not removing any volume: the compose file of $(cat /tmp/xz-unreadable.$$) can't be read"
+	PRUNE_VOLUMES=0
+fi
+rm -f /tmp/xz-unreadable.$$
+if [ "$PRUNE_VOLUMES" -eq 1 ]; then
+	removed=0
+	kept=0
+	while read -r v; do
+		[ -n "$v" ] || continue
+		if grep -qxF "$v" <<<"$declared"; then
+			log "  keep    $v (declared by a compose file, its app is just off)"
+			kept=$((kept + 1))
+		elif docker volume rm "$v" >>"$LOG_FILE" 2>&1; then
+			echo "    | removed volume $v" >>"$LOG_FILE"
+			removed=$((removed + 1))
+		else
+			warn "could not remove volume $v"
+		fi
+	done < <(docker volume ls -qf dangling=true)
+	log "  removed $removed volume(s), kept $kept (names in the log)"
+fi
+
 log "Docker disk use after cleanup:"
 docker system df | sed 's/^/    /'
 unused_volumes="$(docker volume ls -qf dangling=true | wc -l)"
-if [ "$unused_volumes" -gt 0 ]; then
+if [ "$unused_volumes" -gt 0 ] && [ "$PRUNE_VOLUMES" -eq 0 ]; then
 	log "$unused_volumes volume(s) are not used by any container. Not removed (they can hold app data):"
-	log "  review them with: docker volume ls -f dangling=true"
+	log "  review them with: docker volume ls -f dangling=true, or run with --volumes"
 fi

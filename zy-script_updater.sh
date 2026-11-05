@@ -123,10 +123,11 @@ compose() {
 		docker compose -f "$ROOT_DIR/$s/docker-compose.yml" --progress plain "$@"
 }
 
-# "<name> <image id> <image ref>" for every running container of a stack, sorted
+# "<name> <image id> <image ref>" for every container of a stack (stopped
+# ones too, so a stack that is down still shows what it would run), sorted
 running_images() {
 	local id
-	for id in $(docker ps -q --filter "label=com.docker.compose.project.working_dir=$ROOT_DIR/$1" --filter status=running); do
+	for id in $(docker ps -aq --filter "label=com.docker.compose.project.working_dir=$ROOT_DIR/$1"); do
 		docker inspect -f '{{.Name}} {{.Image}} {{.Config.Image}}' "$id"
 	done | sort
 }
@@ -261,7 +262,11 @@ for s in "${ORDER[@]}"; do
 
 	# Recreates only the services whose image changed (and starts the stack
 	# if it was down); leaves orphans alone
-	if ! live start "$s" compose "$s" "$UP_TIMEOUT" up -d; then
+	# After a containerd upgrade an old container can fail with "AlreadyExists";
+	# recreating it fixes that (its volumes and bind mounts are kept)
+	if ! live start "$s" compose "$s" "$UP_TIMEOUT" up -d \
+		&& ! { [[ $LAST_LINE == *AlreadyExists* ]] \
+			&& live recreate "$s" compose "$s" "$UP_TIMEOUT" up -d --force-recreate; }; then
 		warn "up failed for $s: $LAST_LINE"
 		keep_previous "$before" "$(running_images "$s")"
 		CURRENT=""
@@ -271,7 +276,7 @@ for s in "${ORDER[@]}"; do
 
 	after="$(running_images "$s")"
 	if [ -z "$before" ]; then
-		log "  started   $s (was off)"
+		log "  started   $s (new)"
 		UNCHANGED=$((UNCHANGED + 1))
 	elif [ "$before" = "$after" ]; then
 		log "  current   $s"
