@@ -56,6 +56,7 @@ flowchart TB
 
 | Script | Does |
 |---|---|
+| `codemap.py <repo>` | Writes a repo's `CODEMAP.md` from its code: graphify for C, Python, shell, JS and Java; its own parser for VHDL and nand2tetris HDL. Run from the workspace root |
 | `gitea-sync.sh [dir]` | **The workspace bootstrap:** lists every repo through the Gitea API and clones or pulls each one. Needs `jq` |
 | `power-governor.sh battery\|ac` | On battery: stops Syncthing and turns Hyprland's blur and animations off; on AC: back on. Finds the instance signature under `$XDG_RUNTIME_DIR/hypr/` and drives `hyprctl` as the user via `sudo -u`. Fired by `99-battery-saver.rules` |
 | `sb-connect.sh` | Brings up PPP over a Bluetooth rfcomm link to a phone, with a bounded wake-up retry. The device MAC is hardcoded at the top |
@@ -65,6 +66,8 @@ flowchart TB
 | `kodi_playlist_copier.sh` | Copies every `.m3u8` from the music library into Kodi's playlists |
 | `divine_eye.py` | Webcam to ASCII art in the terminal (OpenCV) |
 | `hello.py` | Hello, world |
+
+**Codemap:** [CODEMAP.md](CODEMAP.md), the files, hub functions and call graph, generated from the code.
 
 ---
 *powered by logic, coffee, and many sleepless nights*
