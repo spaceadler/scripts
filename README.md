@@ -15,7 +15,7 @@ One file per job, no framework. Names sort by tier: **`z`/`y`/`x`-prefixed scrip
 `aa-all_in_one.sh` chains the tier so every container stops once and starts once:
 
 ```mermaid
-flowchart LR
+flowchart TB
     bk["zz-script_backup.sh --keep-down<br/>stop all → one .tar.zst"] --> dns["pihole up<br/>(DNS for downloads)"]
     dns --> os["zx-system_updater.sh<br/>OS update"]
     os --> cl["yy-system_cleanup.sh<br/>OS cleanup"]
@@ -41,7 +41,7 @@ Exit codes for the tier: **0** ok, **1** fatal, **2** finished with warnings. Th
 ## Everything Else
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph laptop["Arch laptop (Hyprland)"]
         udev["99-battery-saver.rules<br/>(udev: plug / unplug)"] --> gov["power-governor.sh<br/>Syncthing + blur/animations"]
         brand["branding_toggler.sh"]
