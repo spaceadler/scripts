@@ -2,7 +2,7 @@
 
 ← [README](README.md)
 
-> Generated from commit `f6d18e8` by `scripts/codemap.py`. Regenerate it from the workspace root with `python3 scripts/codemap.py scripts`; don't edit it by hand.
+> Generated from commit `96a3cb7` by `scripts/codemap.py`. Regenerate it from the workspace root with `python3 scripts/codemap.py scripts`; don't edit it by hand.
 
 ## Files
 
@@ -30,7 +30,7 @@ The most connected functions: where a change reaches furthest.
 |---|---|---|---|
 | `restore_stacks()` | `zz-script_backup.sh:137` | 1 | 4 |
 | `graphify_sections()` | `codemap.py:55` | 1 | 3 |
-| `main()` | `codemap.py:244` | 0 | 4 |
+| `main()` | `codemap.py:251` | 0 | 4 |
 | `up_on_list()` | `xz-script_cleanup.sh:139` | 1 | 3 |
 | `vhdl_sections()` | `codemap.py:163` | 1 | 3 |
 | `log()` | `aa-all_in_one.sh:64` | 3 | 0 |
@@ -43,11 +43,6 @@ The most connected functions: where a change reaches furthest.
 | `log()` | `zy-script_updater.sh:64` | 2 | 0 |
 | `on_exit()` | `xz-script_cleanup.sh:159` | 0 | 2 |
 | `on_exit()` | `zz-script_backup.sh:178` | 0 | 2 |
-| `on_exit()` | `zy-script_updater.sh:149` | 0 | 2 |
-| `on_exit()` | `aa-all_in_one.sh:122` | 0 | 2 |
-| `q()` | `codemap.py:43` | 2 | 0 |
-| `step()` | `aa-all_in_one.sh:87` | 1 | 1 |
-| `warn()` | `xz-script_cleanup.sh:62` | 2 | 0 |
 
 ```mermaid
 flowchart LR
@@ -66,33 +61,20 @@ flowchart LR
     n_zy_script_updater_log["log()<br/>zy-script_updater.sh"]
     n_xz_script_cleanup_on_exit["on_exit()<br/>xz-script_cleanup.sh"]
     n_zz_script_backup_on_exit["on_exit()<br/>zz-script_backup.sh"]
-    n_zy_script_updater_on_exit["on_exit()<br/>zy-script_updater.sh"]
-    n_aa_all_in_one_on_exit["on_exit()<br/>aa-all_in_one.sh"]
-    n_codemap_q["q()"]
-    n_aa_all_in_one_step["step()"]
-    n_xz_script_cleanup_warn["warn()"]
     n_zz_script_backup_restore_stacks --> n_zz_script_backup_log
     n_codemap_graphify_sections --> n_codemap_mid
-    n_codemap_graphify_sections --> n_codemap_q
     n_codemap_main --> n_codemap_hdl_sections
     n_codemap_main --> n_codemap_vhdl_sections
     n_codemap_main --> n_codemap_graphify_sections
     n_xz_script_cleanup_up_on_list --> n_xz_script_cleanup_log
     n_xz_script_cleanup_up_on_list --> n_xz_script_cleanup_live
-    n_xz_script_cleanup_up_on_list --> n_xz_script_cleanup_warn
     n_codemap_vhdl_sections --> n_codemap_mid
-    n_codemap_vhdl_sections --> n_codemap_q
     n_xz_script_cleanup_stop_stack --> n_xz_script_cleanup_live
-    n_xz_script_cleanup_stop_stack --> n_xz_script_cleanup_warn
     n_codemap_hdl_sections --> n_codemap_mid
     n_xz_script_cleanup_on_exit --> n_xz_script_cleanup_up_on_list
     n_xz_script_cleanup_on_exit --> n_xz_script_cleanup_log
     n_zz_script_backup_on_exit --> n_zz_script_backup_restore_stacks
     n_zz_script_backup_on_exit --> n_zz_script_backup_log
-    n_zy_script_updater_on_exit --> n_zy_script_updater_log
-    n_aa_all_in_one_on_exit --> n_aa_all_in_one_log
-    n_aa_all_in_one_on_exit --> n_aa_all_in_one_step
-    n_aa_all_in_one_step --> n_aa_all_in_one_log
 ```
 
 ## Functions
@@ -121,7 +103,7 @@ flowchart LR
 - `strip_vhdl_comments()` L159
 - `vhdl_sections()` L163 → `strip_vhdl_comments()`, `mid()`, `q()`
 - `hdl_sections()` L214 → `mid()`
-- `main()` L244 → `run()`, `hdl_sections()`, `vhdl_sections()`, `graphify_sections()`
+- `main()` L251 → `run()`, `hdl_sections()`, `vhdl_sections()`, `graphify_sections()`
 
 ### `divine_eye.py`
 
