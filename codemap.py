@@ -25,10 +25,10 @@ from pathlib import Path
 
 CODE_SUFFIXES = {".c", ".h", ".py", ".sh", ".bash", ".js", ".mjs", ".java", ""}
 SKIP_PARTS = {"vendor", "node_modules", "fonts", "store", "archive", "build", "dist"}
-HUBS = 20               # functions in the hub table and the call graph
+HUBS = 15               # functions in the hub table and the call graph
 MAX_FUNCS_PER_FILE = 60
 MAX_CALLEES = 10
-MAX_FILE_NODES = 40     # files drawn in the file graph
+MAX_FILE_NODES = 25     # files drawn in the file graph
 
 
 def run(cmd, cwd=None):
@@ -225,13 +225,20 @@ def hdl_sections(root):
         parts = re.findall(r"\b([A-Z]\w*)\s*\(", body)
         chips[m.group(1)] = {"file": str(path.relative_to(root)), "parts": collections.Counter(parts)}
     builtin = sorted({p for c in chips.values() for p in c["parts"]} - set(chips))
-    lines = ["## Chips", "", "Which chip is built from which. A number on an arrow is how many of that part it uses; "
-             f"built-in chips: {', '.join(f'`{b}`' for b in builtin)}.", "", "```mermaid", "flowchart BT"]
+    lines = ["## Chips", "", "Which chip is built from which, one graph per folder so each stays readable. "
+             "A number on an arrow is how many of that part it uses; built-in chips: "
+             f"{', '.join(f'`{b}`' for b in builtin)}.", ""]
+    by_dir = collections.defaultdict(list)
     for name, c in chips.items():
-        for part, n in sorted(c["parts"].items()):
-            label = f"|{n}| " if n > 1 else ""
-            lines.append(f"    {mid(part)}[{part}] -->{label}{mid(name)}[{name}]")
-    lines += ["```", "", "| Chip | File | Parts |", "|---|---|---|"]
+        by_dir[str(Path(c["file"]).parent)].append(name)
+    for folder in sorted(by_dir):
+        lines += [f"### `{folder}`", "", "```mermaid", "flowchart LR"]
+        for name in by_dir[folder]:
+            for part, n in sorted(chips[name]["parts"].items()):
+                label = f"|{n}| " if n > 1 else " "
+                lines.append(f"    {mid(part)}[{part}] -->{label}{mid(name)}[{name}]")
+        lines += ["```", ""]
+    lines += ["| Chip | File | Parts |", "|---|---|---|"]
     for name, c in chips.items():
         parts = ", ".join(f"{p}×{n}" if n > 1 else p for p, n in sorted(c["parts"].items()))
         lines.append(f"| `{name}` | `{c['file']}` | {parts} |")
@@ -256,6 +263,12 @@ def main():
         with tarfile.open(tar) as t:
             t.extractall(export / "src")
         src = export / "src"
+        # drop vendored and data folders before graphify sees them: on a
+        # repo like adleros the vendor bundles are most of the graph, and
+        # loading them can run a small machine out of memory
+        for d in sorted(src.rglob("*"), reverse=True):
+            if d.is_dir() and d.name in SKIP_PARTS:
+                shutil.rmtree(d, ignore_errors=True)
         sections = hdl_sections(src) + vhdl_sections(src)
         if shutil.which("graphify"):
             sections += graphify_sections(src)
